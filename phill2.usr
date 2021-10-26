@@ -1,0 +1,795 @@
+c-----------------------------------------------------------------------
+c  nek5000 user-file template
+c
+c  user specified routines:
+c     - userbc : boundary conditions
+c     - useric : initial conditions
+c     - uservp : variable properties
+c     - userf  : local acceleration term for fluid
+c     - userq  : local source term for scalars
+c     - userchk: general purpose routine for checking errors etc.
+c
+c-----------------------------------------------------------------------
+c>    include subroutines
+      include 'lib/shared_sub.f' ! shared computations
+      include 'lib/fluid_sub.f' ! fluid
+      include 'lib/filtering_sub.f' ! TLES
+      include 'lib/forcing_sub.f' ! low wave number forcing
+      include 'lib/slf_sub.f' ! linear forcing
+      include 'lib/usr_sub.f' ! usr-file data
+      include 'lib/statistics_sub.f' ! flow statistics
+c-----------------------------------------------------------------------
+c>    set variable properties
+      subroutine uservp(ix,iy,iz,eg)
+c     interface
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+      integer eg
+c     implementation
+
+      udiff  = ediff(ix,iy,iz,ie)
+      utrans = 1.
+
+      return
+      end
+c-----------------------------------------------------------------------
+c>    set acceleration term
+      subroutine userf(ix,iy,iz,eg)
+c     interface
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+      integer ix,iy,iz,eg
+c     implementation
+      integer  e ! local element number
+
+      e = gllel(eg)
+      call usr_userf(istep,ix,iy,iz,e,ux,uy,uz,ffx,ffy,ffz)
+
+      return
+      end
+c-----------------------------------------------------------------------
+c>    set source term
+      subroutine userq(ix,iy,iz,eg)
+c     interface
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+      integer ix,iy,iz,eg
+c     implementation
+
+      qvol   = 0.0
+      source = 0.0
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userchk
+      include 'SIZE'
+      include 'TOTAL'
+      include 'ZPER'  ! for nelx,nely,nelz
+
+      real x0(3)
+      save x0
+
+      integer icalld
+      save    icalld
+      data    icalld /0/
+
+      character*1   snam1(80)
+      character*1   f1nam1(80),f2nam1(80)
+      character*80  f1name
+      equivalence  (f1nam1,f1name)
+      character*80  f2name
+      equivalence  (f2nam1,f2name)
+
+      real atime,timel
+      save atime,timel
+
+      integer icount
+      save    icount
+
+      common /cdsmag/ ediff(lx1,ly1,lz1,lelv)
+      common /cforce/ ffx_new,ffy_new,ffz_new
+
+      common /plane/  uavg_pl(ly1*lely)
+     $             ,  urms_pl(ly1*lely)
+     $             ,  vrms_pl(ly1*lely)
+     $             ,  wrms_pl(ly1*lely)
+     $             ,  uvms_pl(ly1*lely)
+     $             ,  yy(ly1*lely)
+     $             ,  w1(ly1*lely),w2(ly1*lely)
+     $             ,  ffx_avg, dragx_avg
+
+      common /avg/    uavg(lx1,ly1,lz1,lelv)
+     &             ,  urms(lx1,ly1,lz1,lelv)
+     &             ,  vrms(lx1,ly1,lz1,lelv)
+     &             ,  wrms(lx1,ly1,lz1,lelv)
+     &             ,  uvms(lx1,ly1,lz1,lelv)
+
+      common /ctorq/ dragx(0:maxobj),dragpx(0:maxobj),dragvx(0:maxobj)
+     $             , dragy(0:maxobj),dragpy(0:maxobj),dragvy(0:maxobj)
+     $             , dragz(0:maxobj),dragpz(0:maxobj),dragvz(0:maxobj)
+c
+     $             , torqx(0:maxobj),torqpx(0:maxobj),torqvx(0:maxobj)
+     $             , torqy(0:maxobj),torqpy(0:maxobj),torqvy(0:maxobj)
+     $             , torqz(0:maxobj),torqpz(0:maxobj),torqvz(0:maxobj)
+c
+     $             , dpdx_mean,dpdy_mean,dpdz_mean
+     $             , dgtq(3,4)
+
+      integer e
+      logical ifverbose
+      common /gaaa/    wo1(lx1,ly1,lz1,lelv)
+     &              ,  wo2(lx1,ly1,lz1,lelv)
+     &              ,  wo3(lx1,ly1,lz1,lelv)
+
+      n=nx1*ny1*nz1*nelv
+
+      pi    = 4.*atan(1.0)
+      rho   = 1.
+      dnu   = param(2)
+      delta = 1.           ! channel half height
+      A_w   = 2.*pi * pi   ! wall area
+
+      nelx = 8       ! Number of elements in x,y, and z directions.
+      nely = 8       ! NOTE, this may vary from one mesh to the next.
+      nelz = 8       !
+
+      ntot = nx1*ny1*nz1*nelv
+
+      ! do some checks
+      if (istep.eq.0) then
+         if(mod(nely,2).ne.0) then
+           if(nid.eq.0) write(6,*) 'ABORT: nely has to be even!'
+           call exitt
+         endif
+         if(nelx.gt.lelx .or. nely.gt.lely .or. nelz.gt.lelz) then
+           if(nid.eq.0) write(6,*) 'ABORT: nel_xyz > lel_xyz!'
+           call exitt
+         endif
+      endif
+
+      ! add SGS term to RHS (explicit treatment in plan4)
+      if(ifsplit .and. param(30).gt.0) ifexplvis = .true.
+
+      ! driving force for Ubar = 1
+      call set_forcing(ffx_new,vx,1)
+
+      ! Compute eddy viscosity using dynamic smagorinsky model
+      if(ifuservp) then
+        if(nid.eq.0) write(6,*) 'Calculating eddy visosity'
+        do e=1,nelv
+           call eddy_visc(ediff,e)
+        enddo
+        call copy(t,ediff,n)
+      endif
+
+c
+c     Below is just for postprocessing ...
+c
+      if(mod(istep,iostep).eq.0 .and. istep.gt.0) then
+        ! compute lambda2 vortex
+        call lambda2(t(1,1,1,1,2))
+        ! compute vorticity --- 3 components returned in t(...)
+        if(ldimt.ge.5) call comp_vort3(t(1,1,1,1,3),wo1,wo2,vx,vy,vz)
+      endif
+
+      if (istep.eq.0) then
+         call set_obj                   ! objects for surface integrals
+         call rzero(x0,3)               ! torque w.r.t. x0
+      endif
+
+c     Compute the wall shear
+      call torque_calc(1.0,x0,.false.,.false.)
+
+c     Compute perturbation energy
+      e2 = glsc3(vy,bm1,vy,n)+glsc3(vz,bm1,vz,n)
+      e2 = e2/volvm1
+
+      ifxyo = .true.                        ! Turn on xyz output
+      if (istep.gt.iostep) ifxyo = .false.  ! Turn off xyz output after first dump
+
+      if(icalld.eq.0) then
+        call rzero(uavg,n)
+        call rzero(urms,n)
+        call rzero(vrms,n)
+        call rzero(wrms,n)
+        call rzero(uvms,n)
+        atime = 0.
+        timel = time
+        call planar_average_s(yy     ,ym1 ,w1,w2)
+        icalld = 1
+      endif
+
+      dtime = time - timel
+      atime = atime + dtime
+
+      if (atime.ne.0. .and. dtime.ne.0.) then
+        beta      = dtime/atime
+        alpha     = 1.-beta
+        ifverbose = .false.
+
+        call avg1(uavg,vx   ,alpha,beta,n,'uavg',ifverbose)
+        call avg2(urms,vx   ,alpha,beta,n,'urms',ifverbose)
+        call avg2(vrms,vy   ,alpha,beta,n,'vrms',ifverbose)
+        call avg2(wrms,vz   ,alpha,beta,n,'wrms',ifverbose)
+        call avg3(uvms,vx,vy,alpha,beta,n,'uvmm',ifverbose)
+
+        dragx_avg = alpha*dragx_avg + beta*0.5*(dragx(1)+dragx(2))
+
+        ! averaging over statistical homogeneous directions (r-t)
+        call planar_average_s(uavg_pl,uavg,w1,w2)
+        call planar_average_s(urms_pl,urms,w1,w2)
+        call planar_average_s(vrms_pl,vrms,w1,w2)
+        call planar_average_s(wrms_pl,wrms,w1,w2)
+        call planar_average_s(uvms_pl,uvms,w1,w2)
+
+        ! average over half the channel height
+        m = ny1*nely
+        do i=1,ny1*nely/2
+           uavg_pl(i) = 0.5 * (uavg_pl(i) + uavg_pl(m-i+1))
+           urms_pl(i) = 0.5 * (urms_pl(i) + urms_pl(m-i+1))
+           vrms_pl(i) = 0.5 * (vrms_pl(i) + vrms_pl(m-i+1))
+           wrms_pl(i) = 0.5 * (wrms_pl(i) + wrms_pl(m-i+1))
+        enddo
+      endif
+
+      tw     = dragx_avg/A_w + 1.e-50
+      u_tau  = sqrt(tw/rho)
+      Re_tau = u_tau*delta/dnu
+
+      diff   = (tw-ffx_new)/tw
+      if(nid.eq.0) write(6,1) istep,time,e2,ffx_new,diff
+    1              format(i6,1p4e17.9,' err2')
+
+      ! write statistics to file
+      iostep_avg = param(68)
+      if (nid.eq.0 .and. istep.gt.0 .and.
+     &   mod(istep,iostep_avg).eq.0) then
+         write(6,*) 'Dumping statistics ...'
+         open(unit=56,file='reystresses.dat')
+         write(56,'(A,1pe14.7)') '#time = ', time
+         write(56,'(A)')
+     &   '#  y     y+     R_uu     R_vv     R_ww     R_uv'
+         open(unit=57,file='means.dat')
+         write(57,'(A,1pe14.7)') '#time = ', time
+         write(57,'(A)')
+     &   '#  y     y+    Umean'
+
+         m = ny1*nely/2
+         do i=1,m
+            write(56,3) yy(i)+1
+     &                ,(yy(i)+1)*Re_tau
+     &                , (urms_pl(i)-(uavg_pl(i))**2)/u_tau**2
+     &                , vrms_pl(i)/u_tau**2
+     &                , wrms_pl(i)/u_tau**2
+     &                , uvms_pl(i)/u_tau**2
+            write(57,3)  yy(i) + 1.
+     &                , (yy(i)+1.)*Re_tau
+     &                , uavg_pl(i)/u_tau
+    3       format(1p15e17.9)
+        enddo
+
+        close(56)
+        close(57)
+
+        timel = time
+
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+c>    set up boundary conditions
+      subroutine userbc(ix,iy,iz,f,eg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+      integer eg
+c     implementation
+
+c     ux   = 0.0
+c     uy   = 0.0
+c     uz   = 0.0
+c     temp = 0.0
+
+      return
+      end
+c-----------------------------------------------------------------------
+c>    set up initial conditions
+      subroutine useric(ix,iy,iz,eg)
+c     interface
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+      integer eg
+c     implementation
+
+c     call usr_useric(ifield,pi,x,y,z,ux,uy,uz,temp)
+
+      real amp, ran
+
+      amp = 0.0
+
+      ran = 3.e4*(ieg+X*sin(Y)+Z*cos(Y))
+     $     + 4.7e2*ix*iy*iz - 1.5e3*ix*iy + .5e5*ix
+      ran = 6.e3*sin(ran)
+      ran = 3.e3*sin(ran)
+      ran = cos(ran)
+c     ux = 1. + ran*amp
+      ux = 0.
+
+      ran = (2+ran)*1.e4*(ieg+Y*sin(Z)+X*cos(Z))
+     $     + 1.5e3*ix*iy*iz - 2.5e3*ix*iy + 8.9e4*ix
+      ran = 2.e3*sin(ran)
+      ran = 7.e3*sin(ran)
+      ran = cos(ran)
+      uy = ran*amp
+
+      ran = (4+ran)*5.1e4*(ieg+Z*sin(X)+Y*cos(X))
+     $     + 4.6e3*ix*iy*iz - 2.9e4*ix*iy + 3.7e3*ix
+      ran = 9.e3*sin(ran)
+      ran = 4.e3*sin(ran)
+      ran = cos(ran)
+      uz = ran*amp
+
+      return
+      end
+c-----------------------------------------------------------------------
+c>    initialize and compute dispersed phase and
+c>    write out data
+      subroutine userchk()
+c     interface
+      include 'SIZE'
+      include 'TOTAL'
+      include 'RESTART'
+c     implementation
+
+      call usr_chk1(istep,iostep,dt,torder,volvm1,pi,bm1,binvm1,
+     + xm1,ym1,zm1,vx,vxlag,vy,vylag,vz,vzlag,pr,param(1),param(2))
+      call usr_chk2(istep,iostep,nsteps,ifreguo,ifxyo,time,pr,t,
+     + xm1,ym1,zm1,vx,vy,vz)
+
+      return
+      end
+c-----------------------------------------------------------------------
+c>    modify element vertices
+      subroutine usrdat()
+c     interface
+      include 'SIZE'
+      include 'TOTAL'
+c     implementation
+
+      return
+      end
+c-----------------------------------------------------------------------
+c>    modify mesh coordinates
+      subroutine usrdat2()
+      implicit none
+c     interface
+      include 'SIZE'
+      include 'TOTAL'
+c     implementation
+
+      integer iel
+c     mesh stretching
+      real Betax, Betay
+c     Hill parameters
+      real Lx, Ly, Lz, W, H
+      common /hill_param/ Lx, Ly, Lz, W, H, Betax, Betay
+c     Local variables
+      real Ubulk
+
+      Betax = 2.0
+      Betay = 2.4
+      Lx = 9.
+      Ly = 3.035
+      Lz = 4.5
+      W  = 1.929
+      H = 1.
+
+c               Lx
+c      <----------------->
+c      ___________________
+c                           ^
+c                           |
+c                           |
+c      _                 _  | Ly
+c   ^   \               /   |
+c H |    \             /    |
+c   v     \___________/     v
+c      <-->
+c       W
+
+c     Transform box mesh to periodic hill (only for the conforming mesh!!)
+      call box2phill
+
+c     apply mass flux to drive the flow such that
+c     - Ubulk = velocity averaged over the whole domain
+c     - Ubar_inlet = velocity averaged over the inlet plane = 1.
+      Ubulk = (Ly-H)*Lz
+
+      if (nid.eq.0) write(6,*) 'U_bulk = ', Ubulk, ' Ubar_inlet = 1'
+
+      param(54) = 1             ! x-direction
+      param(55) = Ubulk         ! Ubulk
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat3()
+c     interface
+      include 'SIZE'
+      include 'TOTAL'
+c     implementation
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine box2phill
+      implicit none
+      include 'SIZE'
+      include 'GEOM'            ! {x,y,z}m1
+      include 'INPUT'           ! param
+      include 'SOLN'
+
+      integer i, ntot
+      real Betax, Betay
+      real Lx, Ly, Lz, Wh, H    ! x dimension, y dimension, hill half width, hill height
+      common /hill_param/ Lx, Ly, Lz, Wh, H, Betax ,Betay
+      real shift, amp
+      real xscale, yscale, zscale, yh, xx, yy, zz
+      real hill_step,hill_height,xfac,glmax,glmin
+      real xmin, xmax, ymin, ymax, zmin, zmax
+      save xmin, xmax, ymin, ymax, zmin, zmax
+      logical ifminmax
+      save ifminmax
+      data ifminmax /.false./
+
+      ntot = nx1*ny1*nz1*nelt
+
+      if (.not.ifminmax) then
+         ifminmax = .true.
+         xmin = glmin(xm1,ntot)
+         xmax = glmax(xm1,ntot)
+         ymin = glmin(ym1,ntot)
+         ymax = glmax(ym1,ntot)
+         if (if3d) then
+            zmin = glmin(zm1,ntot)
+            zmax = glmax(zm1,ntot)
+         endif
+      endif
+
+C     decrease resolution in the high velocity regions (increase CFL)
+      do i=1,ntot
+         xm1(i,1,1,1) = 0.5*(sinh(Betax*(xm1(i,1,1,1)-0.5))/
+     $    sinh(Betax*0.5) + 1.0)
+      enddo
+
+c     increase resolution near the wall
+      do i=1,ntot
+         ym1(i,1,1,1) = 0.5*(tanh(Betay*(2*ym1(i,1,1,1)-1.0))/
+     $    tanh(Betay) + 1.0)
+      enddo
+
+c     rescale rectangular domain [0,Lx]x[0,Ly]x[0,Lz]
+      xscale = Lx/(xmax-xmin)
+      yscale = Ly/(ymax-ymin)
+      do i=1,ntot
+         xx = xm1(i,1,1,1)
+         yy = ym1(i,1,1,1)
+         xm1(i,1,1,1) = (xx - xmin) * xscale
+         ym1(i,1,1,1) = (yy - ymin) * yscale
+      enddo
+      if (if3d) then
+         zscale = Lz/(zmax-zmin)
+         do i=1,ntot
+            zz = zm1(i,1,1,1)
+            zm1(i,1,1,1) = (zz - zmin) * zscale
+         enddo
+      endif
+
+c     Shift points in x
+      amp = 0.25
+      do i=1,ntot
+         xx = xm1(i,1,1,1)
+         yy = ym1(i,1,1,1)
+         xm1(i,1,1,1) = xx + amp*shift(xx,yy,Lx,Ly,Wh)
+      enddo
+
+c     Add hill
+      do i=1,ntot
+         xx = xm1(i,1,1,1)
+         yy = ym1(i,1,1,1)
+         yh = hill_height(xx,Lx,Wh,H)
+         yscale = 1-yh/Ly
+         ym1(i,1,1,1) = yh + yy * yscale
+      enddo
+
+      return
+      end
+c-----------------------------------------------------------------------
+C     Step function for the hill
+C
+C          x=0
+C           |
+C      _____|
+C   ^       \
+C   |        \     x->
+C h |         \
+C   v          \_____
+C           <-->
+C            w
+      function hill_step(x,w,h)
+      implicit none
+
+      real x,xs,w,h
+      real y,hill_step
+
+      xs = x/w
+
+      if (xs.le.0) then
+         y = h
+      elseif (xs.gt.0.and.xs.le.9./54.) then
+         y = h*min(1.,1.+7.05575248e-1*xs**2-1.1947737203e1*xs**3)
+      elseif (xs.gt.9./54.and.xs.le.14./54.) then
+         y = h*(0.895484248+1.881283544*xs-10.582126017*xs**2
+     $        +10.627665327*xs**3)
+      elseif (xs.gt.14./54.and.xs.le.20./54.) then
+         y = h*(0.92128609+1.582719366*xs-9.430521329*xs**2
+     $        +9.147030728*xs**3)
+      elseif (xs.gt.20./54..and.xs.le.30./54.) then
+         y = h*(1.445155365-2.660621763*xs+2.026499719*xs**2
+     $        -1.164288215*xs**3)
+      elseif (xs.gt.30./54..and.xs.le.40./54.) then
+         y = h*(0.640164762+1.6863274926*xs-5.798008941*xs**2
+     $        +3.530416981*xs**3)
+      elseif (xs.gt.40./54..and.xs.le.1.) then
+         y = h*(2.013932568-3.877432121*xs+1.713066537*xs**2
+     $        +0.150433015*xs**3)
+      else
+         y = 0.
+      endif
+
+      hill_step = y
+
+      return
+      end
+c-----------------------------------------------------------------------
+      function hill_height(x,Lx,w,H)
+      implicit none
+      real hill_height,hill_step,x,Lx,w,h
+      real xx
+
+      if (x.lt.0) then
+         xx = Lx + mod(x, Lx)
+      elseif (x.gt.Lx) then
+         xx = mod(x, Lx)
+      else
+         xx = x
+      endif
+
+      hill_height = hill_step(xx,w,h) + hill_step(Lx-xx,w,h)
+
+      return
+      end
+c-----------------------------------------------------------------------
+      function shift(x,y,Lx,Ly,W)
+      implicit none
+      real x,y,Lx,Ly,W
+      real xfac,yfac,shift
+
+      yfac = (1-y/Ly)**3
+
+      if (x.le.W/2) then
+         xfac = -2./W * x
+      elseif (x.gt.W/2.and.x.le.Lx-W/2) then
+         xfac = 2./(Lx-W) * x -1-W/(Lx-W)
+      elseif (x.gt.Lx-W/2) then
+         xfac = -2./W * x + 2*Lx/W
+      endif
+
+      shift = xfac*yfac
+
+      return
+      end
+
+c-----------------------------------------------------------------------
+      subroutine comp_lij(lij,u,v,w,fu,fv,fw,fh,fht,e)
+c
+c     Compute Lij for dynamic Smagorinsky model:
+c                    _   _      _______
+c          L_ij  :=  u_i u_j  - u_i u_j
+c
+      include 'SIZE'
+c
+      integer e
+c
+      real lij(lx1*ly1*lz1,3*ldim-3)
+      real u  (lx1*ly1*lz1,lelv)
+      real v  (lx1*ly1*lz1,lelv)
+      real w  (lx1*ly1*lz1,lelv)
+      real fu (1) , fv (1) , fw (1)
+     $   , fh (1) , fht(1)
+
+      call tens3d1(fu,u(1,e),fh,fht,nx1,nx1)  ! fh x fh x fh x u
+      call tens3d1(fv,v(1,e),fh,fht,nx1,nx1)
+      call tens3d1(fw,w(1,e),fh,fht,nx1,nx1)
+
+      n = nx1*ny1*nz1
+      do i=1,n
+         lij(i,1) = fu(i)*fu(i)
+         lij(i,2) = fv(i)*fv(i)
+         lij(i,3) = fw(i)*fw(i)
+         lij(i,4) = fu(i)*fv(i)
+         lij(i,5) = fv(i)*fw(i)
+         lij(i,6) = fw(i)*fu(i)
+      enddo
+
+      call col3   (fu,u(1,e),u(1,e),n)    !  _______
+      call tens3d1(fv,fu,fh,fht,nx1,nx1)  !  u_1 u_1
+      call sub2   (lij(1,1),fv,n)
+
+      call col3   (fu,v(1,e),v(1,e),n)    !  _______
+      call tens3d1(fv,fu,fh,fht,nx1,nx1)  !  u_2 u_2
+      call sub2   (lij(1,2),fv,n)
+
+      call col3   (fu,w(1,e),w(1,e),n)    !  _______
+      call tens3d1(fv,fu,fh,fht,nx1,nx1)  !  u_3 u_3
+      call sub2   (lij(1,3),fv,n)
+
+      call col3   (fu,u(1,e),v(1,e),n)    !  _______
+      call tens3d1(fv,fu,fh,fht,nx1,nx1)  !  u_1 u_2
+      call sub2   (lij(1,4),fv,n)
+
+      call col3   (fu,v(1,e),w(1,e),n)    !  _______
+      call tens3d1(fv,fu,fh,fht,nx1,nx1)   !  u_2 u_3
+      call sub2   (lij(1,5),fv,n)
+
+      call col3   (fu,w(1,e),u(1,e),n)    !  _______
+      call tens3d1(fv,fu,fh,fht,nx1,nx1)  !  u_3 u_1
+      call sub2   (lij(1,6),fv,n)
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine comp_mij(mij,sij,dg2,fs,fi,fh,fht,nt,e)
+c
+c     Compute Mij for dynamic Smagorinsky model:
+c
+c                     2 _  ____     _______
+c          M_ij  :=  a  S  S_ij  -  S  S_ij
+c
+      include 'SIZE'
+c
+      integer e
+c
+      real mij(lx1*ly1*lz1,3*ldim-3)
+      real dg2(lx1*ly1*lz1,lelv)
+      real fs (1) , fi (1) , fh (1) , fht(1)
+
+      real magS(lx1*ly1*lz1)
+      real sij (lx1*ly1*lz1*ldim*ldim)
+
+      integer imap(6)
+      data imap / 0,4,8,1,5,2 /
+
+      n = nx1*ny1*nz1
+
+      call mag_tensor_e(magS,sij)
+      call cmult(magS,2.0,n)
+
+c     Filter S
+      call tens3d1(fs,magS,fh,fht,nx1,nx1)  ! fh x fh x fh x |S|
+
+c     a2 is the test- to grid-filter ratio, squared
+
+      a2 = nx1-1       ! nx1-1 is number of spaces in grid
+      a2 = a2 /(nt-1)  ! nt-1 is number of spaces in filtered grid
+
+      do k=1,6
+         jj = n*imap(k) + 1
+         call col3   (fi,magS,sij(jj),n)
+         call tens3d1(mij(1,k),fi,fh,fht,nx1,nx1)  ! fh x fh x fh x (|S| S_ij)
+         call tens3d1(fi,sij(jj),fh,fht,nx1,nx1)  ! fh x fh x fh x S_ij
+         do i=1,n
+            mij(i,k) = (a2**2 * fs(i)*fi(i) - mij(i,k))*dg2(i,e)
+         enddo
+      enddo
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine eddy_visc(ediff,e)
+c
+c     Compute eddy viscosity using dynamic smagorinsky model
+c
+      include 'SIZE'
+      include 'TOTAL'
+      include 'ZPER'
+
+      real ediff(nx1*ny1*nz1,nelv)
+      integer e
+
+      common /dynsmg/ sij (lx1*ly1*lz1,ldim,ldim)
+     $              , mij (lx1*ly1*lz1,3*ldim-3)
+     $              , lij (lx1*ly1*lz1,3*ldim-3)
+     $              , dg2 (lx1*ly1*lz1,lelv)
+     $              , num (lx1*ly1*lz1,lelv)
+     $              , den (lx1*ly1*lz1,lelv)
+     $              , snrm(lx1*ly1*lz1,lelv)
+     $              , numy(ly1*lely),deny(ly1*lely),yy(ly1*lely)
+      real sij,mij,lij,dg2,num,den,snrm,numy,deny,yy
+
+      parameter(lxyz=lx1*ly1*lz1)
+      common /xzmp0/ ur (lxyz) , us (lxyz) , ut (lxyz)
+      real           vr (lxyz) , vs (lxyz) , vt (lxyz)
+     $     ,         wr (lxyz) , ws (lxyz) , wt (lxyz)
+      common /xzmp1/ w1(lx1*lelv),w2(lx1*lelv)
+
+      !! NOTE CAREFUL USE OF EQUIVALENCE HERE !!
+      equivalence (vr,lij(1,1)),(vs,lij(1,2)),(vt,lij(1,3))
+     $          , (wr,lij(1,4)),(ws,lij(1,5)),(wt,lij(1,6))
+
+      common /sgsflt/ fh(lx1*lx1),fht(lx1*lx1),diag(lx1)
+
+      integer nt
+      save    nt
+      data    nt / -9 /
+
+      ntot = nx1*ny1*nz1
+
+      if (nt.lt.0) call
+     $   set_ds_filt(fh,fht,nt,diag,nx1)! dyn. Smagorinsky filter
+
+      call comp_gije(sij,vx(1,1,1,e),vy(1,1,1,e),vz(1,1,1,e),e)
+      call comp_sije(sij)
+
+      call mag_tensor_e(snrm(1,e),sij)
+      call cmult(snrm(1,e),2.0,ntot)
+
+      call set_grid_spacing(dg2)
+      call comp_mij   (mij,sij,dg2,ur,us,fh,fht,nt,e)
+
+      call comp_lij   (lij,vx,vy,vz,ur,us,ut,fh,fht,e)
+
+c     Compute numerator (ur) & denominator (us) for Lilly contraction
+
+      n = nx1*ny1*nz1
+      do i=1,n
+         ur(i) = mij(i,1)*lij(i,1)+mij(i,2)*lij(i,2)+mij(i,3)*lij(i,3)
+     $      + 2*(mij(i,4)*lij(i,4)+mij(i,5)*lij(i,5)+mij(i,6)*lij(i,6))
+         us(i) = mij(i,1)*mij(i,1)+mij(i,2)*mij(i,2)+mij(i,3)*mij(i,3)
+     $      + 2*(mij(i,4)*mij(i,4)+mij(i,5)*mij(i,5)+mij(i,6)*mij(i,6))
+      enddo
+
+c     smoothing numerator and denominator in time
+      call copy (vr,ur,nx1*nx1*nx1)
+      call copy (vs,us,nx1*nx1*nx1)
+
+      beta1 = 0.0                   ! Temporal averaging coefficients
+      if (istep.gt.1) beta1 = 0.9   ! Retain 90 percent of past
+      beta2 = 1. - beta1
+
+      do i=1,n
+         num (i,e) = beta1*num(i,e) + beta2*vr(i)
+         den (i,e) = beta1*den(i,e) + beta2*vs(i)
+      enddo
+
+
+      if (e.eq.nelv) then  ! planar avg and define nu_tau
+
+         call dsavg(num)   ! average across element boundaries
+         call dsavg(den)
+
+         call planar_average_s      (numy,num,w1,w2)
+c        call wall_normal_average_s (numy,ny1,nely,w1,w2)
+         call planar_fill_s         (num,numy)
+
+         call planar_average_s      (deny,den,w1,w2)
+c        call wall_normal_average_s (deny,ny1,nely,w1,w2)
+         call planar_fill_s         (den,deny)
+
+         call planar_average_s(yy,ym1,w1,w2)
