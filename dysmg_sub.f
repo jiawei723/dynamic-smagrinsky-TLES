@@ -167,7 +167,7 @@ c>    write out volume average of velocity and turbulent statistics
 c     interface
       include 'SIZE'
       include 'lib/shared_data.f'
-      include 'lib/slf_data.f'
+      include 'lib/dysmg_data.f'
 c     implementation
       integer ios
       real time
@@ -208,7 +208,7 @@ c>    compute channel flow statistics
 c     interface
       include 'SIZE'
       include 'lib/shared_data.f'
-      include 'lib/slf_data.f'
+      include 'lib/dysmg_data.f'
       integer istep
       real bm1(lx1,ly1,lz1,lelt),vx(lx1,ly1,lz1,lelv),
      + vy(lx1,ly1,lz1,lelv),vz(lx1,ly1,lz1,lelv),volvm1
@@ -629,7 +629,7 @@ c>    compute the Reynolds stresses as a function of y
 c     interface
       include 'SIZE'
       include 'lib/shared_data.f'
-      include 'lib/slf_data.f'
+      include 'lib/dysmg_data.f'
       include 'lib/filtering_data.f'
       real time,vx(lx1,ly1,lz1,lelv),vy(lx1,ly1,lz1,lelv),
      + vz(lx1,ly1,lz1,lelv)
@@ -727,7 +727,7 @@ c     interface
       include 'SIZE'
       include 'TOTAL'
       include 'ZPER'  ! for nelx,nely,nelz
-      include 'lib/slf_data.f'
+      include 'lib/dysmg_data.f'
       logical iftles
 c     implementation
       integer m
@@ -786,7 +786,7 @@ c>    of the Reynolds stresses
 c     interface
       include 'SIZE'
       include 'lib/shared_data.f'
-      include 'lib/slf_data.f'
+      include 'lib/dysmg_data.f'
 c     implementation
       integer i,ios
       real time

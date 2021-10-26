@@ -5,12 +5,13 @@ c>    set variable properties
 c     interface
       include 'SIZE'
       include 'lib/shared_data.f'
-      integer ifield,istep
+      include 'lib/dysmg_data.f'
+      integer ifield,istep,ix,iy,iz,eg
       real utrans,udiff,temp
 c     implementation
 
-      udiff  = 0.0
-      utrans = 0.0
+      udiff  = ediff(ix,iy,iz,eg)
+      utrans = 1.0
 
       return
       end
@@ -34,7 +35,7 @@ c     interface
       include 'lib/filtering_data.f'
       include 'lib/fluid_data.f'
       include 'lib/forcing_data.f'
-      include 'lib/slf_data.f'
+      include 'lib/dysmg_data.f'
       integer istep,ix,iy,iz,e
       real ux,uy,uz,ffx,ffy,ffz
 c     implementation

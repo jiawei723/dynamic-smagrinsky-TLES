@@ -40,6 +40,9 @@ c     Reynolds stresses
       real Ruu_dconv(ly1*lely),Rvv_dconv(ly1*lely),Rww_dconv(ly1*lely),
      + Ruv_dconv(ly1*lely)
 
+c     dysmg
+      real ediff(lx1,ly1,lz1,lelv)
+
 c     common block
       common /slf_real/ vxv, vyv, vzv, Af, kin, eps, velrms,
      + lambda, relambda, rel, teddy, leddy, teta, leta, tauw, utau,
@@ -48,4 +51,4 @@ c     common block
      + tijavg_yy, tijavg_zz, tijavg_xy, uavg_y, urms_y, vrms_y, wrms_y,
      + uvms_y, uavg_dconv_y, urms_dconv_y, vrms_dconv_y, wrms_dconv_y,
      + uvms_dconv_y, tijavg_xx_y, tijavg_yy_y, tijavg_zz_y, tijavg_xy_y,
-     + Ruu, Rvv, Rww, Ruv, Ruu_dconv, Rvv_dconv, Rww_dconv, Ruv_dconv
+     + Ruu, Rvv, Rww, Ruv, Ruu_dconv, Rvv_dconv, Rww_dconv, Ruv_dconv, ediff
