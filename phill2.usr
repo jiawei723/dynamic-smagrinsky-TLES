@@ -1,4 +1,4 @@
-c-----------------------------------------------------------------------
+3c-----------------------------------------------------------------------
 c  nek5000 user-file template
 c
 c  user specified routines:
@@ -15,8 +15,8 @@ c>    include subroutines
       include 'lib/fluid_sub.f' ! fluid
       include 'lib/filtering_sub.f' ! TLES
       include 'lib/forcing_sub.f' ! low wave number forcing
-      include 'lib/slf_sub.f' ! linear forcing
-      include 'lib/usr_sub.f' ! usr-file data
+      include 'lib/dysmg_sub.f' ! linear forcing
+      include 'lib/dysmg_usr_sub.f' ! usr-file data
       include 'lib/statistics_sub.f' ! flow statistics
 c-----------------------------------------------------------------------
 c>    set variable properties

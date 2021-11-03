@@ -1,0 +1,35 @@
+#
+# nek parameter file
+#
+[GENERAL] 
+#startFrom = init.f00003
+stopAt = numSteps #endTime
+numsteps = 20e4
+
+dt = 5.0e-4
+timeStepper = bdf3
+variableDt = no
+
+writeControl = timeStep
+writeInterval = 400.0
+
+dealiasing = yes
+filtering = explicit #hpfrt, none, explicit
+filterWeight = 0.3
+filterCutoffRatio = 0.65
+
+[PROBLEMTYPE]
+variableProperties = no # set to yes in case of Smagorinski
+equation = incompNS
+
+[PRESSURE]
+preconditioner = semg_xxt
+residualTol = 1e-04
+residualProj = yes
+
+[VELOCITY]
+residualTol = 1e-06
+residualProj = yes
+density = 1
+viscosity = 9.4384e-05
+advection = yes
