@@ -42,6 +42,12 @@ c     Reynolds stresses
 
 c     dysmg
       real ediff(lx1,ly1,lz1,lelv)
+      real sij,mij,lij,dg2,num,den,snrm,numy,deny,yy
+      real sij (lx1*ly1*lz1,ldim,ldim), mij (lx1*ly1*lz1,3*ldim-3),
+     + lij (lx1*ly1*lz1,3*ldim-3), dg2 (lx1*ly1*lz1,lelv),
+     + num (lx1*ly1*lz1,lelv), den (lx1*ly1*lz1,lelv),
+     + snrm(lx1*ly1*lz1,lelv), numy(ly1*lely),deny(ly1*lely),yy(ly1*lely)
+      real u,v,w,fu,fv,fw,fh,fht,fs,fi,nt,e
 
 c     common block
       common /slf_real/ vxv, vyv, vzv, Af, kin, eps, velrms,
@@ -52,3 +58,6 @@ c     common block
      + uvms_y, uavg_dconv_y, urms_dconv_y, vrms_dconv_y, wrms_dconv_y,
      + uvms_dconv_y, tijavg_xx_y, tijavg_yy_y, tijavg_zz_y, tijavg_xy_y,
      + Ruu, Rvv, Rww, Ruv, Ruu_dconv, Rvv_dconv, Rww_dconv, Ruv_dconv, ediff
+
+      common /dynsmg/ sij , mij , lij , dg2 , num , den , snrm , numy,deny,yy
+      common /sgsflt/ fh(lx1*lx1),fht(lx1*lx1),diag(lx1)

@@ -155,6 +155,12 @@ c     initialize data
             call slf_init()
          endif
 
+c     initialize dysmg data
+      if (istep .eq. 0) then
+         call shared_init(xm1,ym1,zm1)
+         call dysmg_init()
+      endif
+
 c     Compute eddy viscosity using dynamic smagorinsky model
       if(ifuservp) then
         if(nid.eq.0) write(6,*) 'Calculating eddy visosity'
@@ -218,6 +224,19 @@ c     compute statistics
          call slf_channel_compute(istep,bm1,vx,vy,vz,volvm1,rho,mu/rho)
          if (istep*dt .ge. 10.0) then ! start after 10 seconds
             call slf_channel_compute_stresses(istep*dt,vx,vy,vz)
+         endif
+      elseif (istep .gt. 0) then
+         call slf_trb_compute(bm1,vx,vy,vz,volvm1,mu/rho)
+      endif
+
+c     compute dynamic smagrinsky model
+      call dysmg_compute()
+      if (ifdysmg) then
+         call dysmg_L_compute()
+         if (istep*dt .ge. 10.0) then ! same as up
+            call comp_lij(lij,u,v,w,fu,fv,fw,fh,fht,e)
+            call comp_mij(mij,sij,dg2,fs,fi,fh,fht,nt,e)
+            call eddy_visc(ediff,e)
          endif
       elseif (istep .gt. 0) then
          call slf_trb_compute(bm1,vx,vy,vz,volvm1,mu/rho)
@@ -313,204 +332,3 @@ c     write out u(t) each time step after istep >= 0.5*nsteps
       return
       end
 
-c-----------------------------------------------------------------------
-c>     Compute Lij for dynamic Smagorinsky model:
-c                    _   _      _______
-c          L_ij  :=  u_i u_j  - u_i u_j
-c
-      subroutine comp_lij(lij,u,v,w,fu,fv,fw,fh,fht,e)
-
-      include 'SIZE'
-c
-      integer e
-c
-      real lij(lx1*ly1*lz1,3*ldim-3)
-      real u  (lx1*ly1*lz1,lelv)
-      real v  (lx1*ly1*lz1,lelv)
-      real w  (lx1*ly1*lz1,lelv)
-      real fu (1) , fv (1) , fw (1)
-     $   , fh (1) , fht(1)
-
-      call tens3d1(fu,u(1,e),fh,fht,nx1,nx1)  ! fh x fh x fh x u
-      call tens3d1(fv,v(1,e),fh,fht,nx1,nx1)
-      call tens3d1(fw,w(1,e),fh,fht,nx1,nx1)
-
-      n = nx1*ny1*nz1
-      do i=1,n
-         lij(i,1) = fu(i)*fu(i)
-         lij(i,2) = fv(i)*fv(i)
-         lij(i,3) = fw(i)*fw(i)
-         lij(i,4) = fu(i)*fv(i)
-         lij(i,5) = fv(i)*fw(i)
-         lij(i,6) = fw(i)*fu(i)
-      enddo
-
-      call col3   (fu,u(1,e),u(1,e),n)    !  _______
-      call tens3d1(fv,fu,fh,fht,nx1,nx1)  !  u_1 u_1
-      call sub2   (lij(1,1),fv,n)
-
-      call col3   (fu,v(1,e),v(1,e),n)    !  _______
-      call tens3d1(fv,fu,fh,fht,nx1,nx1)  !  u_2 u_2
-      call sub2   (lij(1,2),fv,n)
-
-      call col3   (fu,w(1,e),w(1,e),n)    !  _______
-      call tens3d1(fv,fu,fh,fht,nx1,nx1)  !  u_3 u_3
-      call sub2   (lij(1,3),fv,n)
-
-      call col3   (fu,u(1,e),v(1,e),n)    !  _______
-      call tens3d1(fv,fu,fh,fht,nx1,nx1)  !  u_1 u_2
-      call sub2   (lij(1,4),fv,n)
-
-      call col3   (fu,v(1,e),w(1,e),n)    !  _______
-      call tens3d1(fv,fu,fh,fht,nx1,nx1)   !  u_2 u_3
-      call sub2   (lij(1,5),fv,n)
-
-      call col3   (fu,w(1,e),u(1,e),n)    !  _______
-      call tens3d1(fv,fu,fh,fht,nx1,nx1)  !  u_3 u_1
-      call sub2   (lij(1,6),fv,n)
-
-      return
-      end
-c-----------------------------------------------------------------------
-      subroutine comp_mij(mij,sij,dg2,fs,fi,fh,fht,nt,e)
-c
-c     Compute Mij for dynamic Smagorinsky model:
-c
-c                     2 _  ____     _______
-c          M_ij  :=  a  S  S_ij  -  S  S_ij
-c
-      include 'SIZE'
-c
-      integer e
-c
-      real mij(lx1*ly1*lz1,3*ldim-3)
-      real dg2(lx1*ly1*lz1,lelv)
-      real fs (1) , fi (1) , fh (1) , fht(1)
-
-      real magS(lx1*ly1*lz1)
-      real sij (lx1*ly1*lz1*ldim*ldim)
-
-      integer imap(6)
-      data imap / 0,4,8,1,5,2 /
-
-      n = nx1*ny1*nz1
-
-      call mag_tensor_e(magS,sij)
-      call cmult(magS,2.0,n)
-
-c     Filter S
-      call tens3d1(fs,magS,fh,fht,nx1,nx1)  ! fh x fh x fh x |S|
-
-c     a2 is the test- to grid-filter ratio, squared
-
-      a2 = nx1-1       ! nx1-1 is number of spaces in grid
-      a2 = a2 /(nt-1)  ! nt-1 is number of spaces in filtered grid
-
-      do k=1,6
-         jj = n*imap(k) + 1
-         call col3   (fi,magS,sij(jj),n)
-         call tens3d1(mij(1,k),fi,fh,fht,nx1,nx1)  ! fh x fh x fh x (|S| S_ij)
-         call tens3d1(fi,sij(jj),fh,fht,nx1,nx1)  ! fh x fh x fh x S_ij
-         do i=1,n
-            mij(i,k) = (a2**2 * fs(i)*fi(i) - mij(i,k))*dg2(i,e)
-         enddo
-      enddo
-
-      return
-      end
-c-----------------------------------------------------------------------
-      subroutine eddy_visc(ediff,e)
-c
-c     Compute eddy viscosity using dynamic smagorinsky model
-c
-      include 'SIZE'
-      include 'TOTAL'
-      include 'ZPER'
-
-      real ediff(nx1*ny1*nz1,nelv)
-      integer e
-
-      common /dynsmg/ sij (lx1*ly1*lz1,ldim,ldim)
-     $              , mij (lx1*ly1*lz1,3*ldim-3)
-     $              , lij (lx1*ly1*lz1,3*ldim-3)
-     $              , dg2 (lx1*ly1*lz1,lelv)
-     $              , num (lx1*ly1*lz1,lelv)
-     $              , den (lx1*ly1*lz1,lelv)
-     $              , snrm(lx1*ly1*lz1,lelv)
-     $              , numy(ly1*lely),deny(ly1*lely),yy(ly1*lely)
-      real sij,mij,lij,dg2,num,den,snrm,numy,deny,yy
-
-      parameter(lxyz=lx1*ly1*lz1)
-      common /xzmp0/ ur (lxyz) , us (lxyz) , ut (lxyz)
-      real           vr (lxyz) , vs (lxyz) , vt (lxyz)
-     $     ,         wr (lxyz) , ws (lxyz) , wt (lxyz)
-      common /xzmp1/ w1(lx1*lelv),w2(lx1*lelv)
-
-      !! NOTE CAREFUL USE OF EQUIVALENCE HERE !!
-      equivalence (vr,lij(1,1)),(vs,lij(1,2)),(vt,lij(1,3))
-     $          , (wr,lij(1,4)),(ws,lij(1,5)),(wt,lij(1,6))
-
-      common /sgsflt/ fh(lx1*lx1),fht(lx1*lx1),diag(lx1)
-
-      integer nt
-      save    nt
-      data    nt / -9 /
-
-      ntot = nx1*ny1*nz1
-
-      if (nt.lt.0) call
-     $   set_ds_filt(fh,fht,nt,diag,nx1)! dyn. Smagorinsky filter
-
-      call comp_gije(sij,vx(1,1,1,e),vy(1,1,1,e),vz(1,1,1,e),e)
-      call comp_sije(sij)
-
-      call mag_tensor_e(snrm(1,e),sij)
-      call cmult(snrm(1,e),2.0,ntot)
-
-      call set_grid_spacing(dg2)
-      call comp_mij   (mij,sij,dg2,ur,us,fh,fht,nt,e)
-
-      call comp_lij   (lij,vx,vy,vz,ur,us,ut,fh,fht,e)
-
-c     Compute numerator (ur) & denominator (us) for Lilly contraction
-
-      n = nx1*ny1*nz1
-      do i=1,n
-         ur(i) = mij(i,1)*lij(i,1)+mij(i,2)*lij(i,2)+mij(i,3)*lij(i,3)
-     $      + 2*(mij(i,4)*lij(i,4)+mij(i,5)*lij(i,5)+mij(i,6)*lij(i,6))
-         us(i) = mij(i,1)*mij(i,1)+mij(i,2)*mij(i,2)+mij(i,3)*mij(i,3)
-     $      + 2*(mij(i,4)*mij(i,4)+mij(i,5)*mij(i,5)+mij(i,6)*mij(i,6))
-      enddo
-
-c     smoothing numerator and denominator in time
-      call copy (vr,ur,nx1*nx1*nx1)
-      call copy (vs,us,nx1*nx1*nx1)
-
-      beta1 = 0.0                   ! Temporal averaging coefficients
-      if (istep.gt.1) beta1 = 0.9   ! Retain 90 percent of past
-      beta2 = 1. - beta1
-
-      do i=1,n
-         num (i,e) = beta1*num(i,e) + beta2*vr(i)
-         den (i,e) = beta1*den(i,e) + beta2*vs(i)
-      enddo
-
-
-      if (e.eq.nelv) then  ! planar avg and define nu_tau
-
-         call dsavg(num)   ! average across element boundaries
-         call dsavg(den)
-
-         call planar_average_s      (numy,num,w1,w2)
-c        call wall_normal_average_s (numy,ny1,nely,w1,w2)
-         call planar_fill_s         (num,numy)
-
-         call planar_average_s      (deny,den,w1,w2)
-c        call wall_normal_average_s (deny,ny1,nely,w1,w2)
-         call planar_fill_s         (den,deny)
-
-         call planar_average_s(yy,ym1,w1,w2)
-      endif
-
-      return
-      end
